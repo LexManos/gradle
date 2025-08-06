@@ -35,6 +35,8 @@ import org.gradle.api.artifacts.result.ArtifactResult;
 import org.gradle.api.artifacts.result.ComponentArtifactsResult;
 import org.gradle.api.artifacts.result.ResolvedArtifactResult;
 import org.gradle.api.artifacts.result.UnresolvedDependencyResult;
+import org.gradle.api.attributes.AttributeContainer;
+import org.gradle.api.attributes.Category;
 import org.gradle.api.attributes.DocsType;
 import org.gradle.api.component.Artifact;
 import org.gradle.api.model.ObjectFactory;
@@ -159,6 +161,11 @@ public class IdeDependencySet {
 
             for (ResolvedArtifactResult resolvedArtifact : artifacts) {
                 if (resolvedArtifact.getId() instanceof ModuleComponentArtifactIdentifier) {
+                    // This is a dirty hack, but it's because ivy repos don't take attributes into account at all.
+                    ResolvedArtifactResult main = resolvedArtifacts.get(resolvedArtifact.getId());
+                    if (main != null && resolvedArtifact.getFile().equals(main.getFile())) {
+                        continue;
+                    }
                     ModuleComponentIdentifier id = ((ModuleComponentArtifactIdentifier) resolvedArtifact.getId()).getComponentIdentifier();
                     Set<ResolvedArtifactResult> set = auxiliaryArtifacts.get(id, type);
                     if (set == null) {
@@ -203,15 +210,16 @@ public class IdeDependencySet {
         }
 
         private ArtifactCollection getResolvedArtifactVariants(Configuration configuration, final IdeDependencyVisitor visitor, boolean sources) {
-            return configuration.getIncoming().artifactView(new Action<ArtifactView.ViewConfiguration>() {
-                @Override
-                public void execute(ArtifactView.ViewConfiguration viewConfiguration) {
-                    viewConfiguration.withVariantReselection();
-                    viewConfiguration.lenient(true);
-                    viewConfiguration.componentFilter(getComponentFilter(visitor));
-                    viewConfiguration.getAttributes().attribute(DocsType.DOCS_TYPE_ATTRIBUTE, objectFactory.named(DocsType.class, sources ? DocsType.SOURCES : DocsType.JAVADOC));
-                }
-            }).getArtifacts();
+            // We want the exact configuration and attributes, except the source variants
+            // So make a recursive copy, which flattens the attributes/constraints/dependency list
+            Configuration copy = configuration.copyRecursive();
+            // Change the category and type to what we want
+            AttributeContainer attrs = copy.getAttributes();
+            attrs.attribute(Category.CATEGORY_ATTRIBUTE, objectFactory.named(Category.class, Category.DOCUMENTATION));
+            attrs.attribute(DocsType.DOCS_TYPE_ATTRIBUTE, objectFactory.named(DocsType.class, sources ? DocsType.SOURCES : DocsType.JAVADOC));
+            // Now return a normal resolution, this will not work for anything that doesn't define a gradle module metadata file
+            // However, we fall back to the old ArtifactResolutionQuery for anything we can't find.
+            return getResolvedArtifacts(copy, visitor);
         }
 
         private Spec<ComponentIdentifier> getComponentFilter(IdeDependencyVisitor visitor) {
